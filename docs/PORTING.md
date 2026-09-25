@@ -42,7 +42,7 @@ wholesale and patched. Instead:
 | `filespace`, `sandbox`, `security` | The Windows host boundary. Unaffected by where inference runs. |
 | `scopes` | The authority tables. **Local residue:** snapshot verbs, which change with I12. |
 | `rpc` | Loopback JSON-lines RPC between processes. |
-| `config` | **Local residue:** `BackendConfig` (llama.cpp paths, `n_ctx`, KV types), `runtime_dir`, `models_dir`, `BatchingConfig`, `kv_admission_reserve_fraction`, and occupancy-based `HomeostasisSettings`. Replace these with the inference and spend configuration below. `config.example.toml` covers only what is real today. |
+| `config` | `BackendConfig`, `BatchingConfig`, `runtime_dir` and `models_dir` are gone, replaced by `[inference]` and model classes. A config that still has `[backend]` or `[batching]` is refused, with directions. **Remaining local residue:** `ArbiterConfig`'s KV fields (`kv_admission_reserve_fraction`, per-class token budgets) and occupancy-based `HomeostasisSettings`. These go when the arbiter and homeostasis are rewritten. |
 
 Carried tests: `test_durable_foundation`, `test_filespace`,
 `test_filesystem_hardening`, `test_sandbox`, `test_repo_is_portable`.
@@ -67,29 +67,55 @@ Amoeba's `scripts/verify_invariants.py` back into this one.
 
 | Amoeba module | Why it cannot be ported | Remoeba replacement |
 |---|---|---|
-| `inference_service`, `backends/base` | A stateful token-level contract: `tokenize`, `ingest`, `fork_prefix`, `restore_prefix`, `session_tokens`, `top_logits`, `vram_free`. | A remote inference service, the **only** process holding the API credential (R1), with a message-level contract (below). |
-| `backends/deterministic` | Simulates the token contract. | A deterministic fake that speaks the new message-level contract and labels every result simulated. Most of the ported Harness tests run against it. |
+| `inference_service`, `backends/base` | A stateful token-level contract: `tokenize`, `ingest`, `fork_prefix`, `restore_prefix`, `session_tokens`, `top_logits`, `vram_free`. | **Built:** `remoeba.inference.service`. See "The inference seam, as built" below. |
+| `backends/deterministic` | Simulates the token contract. | **Built:** `remoeba.inference.transport.FakeTransport`, which returns OpenRouter-shaped responses through the real classification code and labels every result simulated. |
 | `roles` | Owns a KV session, ingests tokens, parses `<tool_call>` out of text, resumes at exact token positions (I109). | A turn reads its message list from the record, sends it with a `tools` array, and appends the response. The role holds no transcript (see decisions). |
 | `neuocyte` | Forks or recomputes a KV prefix. | Starts from a message-list snapshot plus its own private tail. |
-| `homeostasis`, `reconstitution` | Token-span accounting and template-token message splitting. | Message-range reclamation: the same policy (I93, I122) without token coordinates. |
-| `arbiter` | Admission against a measured KV pool. | Admission against spend ceilings and rate limits (I98, R4, R5). |
+| `homeostasis`, `reconstitution` | Token-span accounting and template-token message splitting. | Message-range reclamation (I93, I122) without token coordinates, and with a **new objective**: a rebuild reclaims tokens but destroys provider-side prefix reuse, so homeostasis balances request cost, cache reuse, context quality, latency and rate pressure (L-CACHE). |
+| `arbiter` | Admission against a measured KV pool. | Admission against spend ceilings and rate limits (I98, R4, R5). Its numbers are re-derived, never carried (INVARIANTS.md, "Numbers to re-derive"). |
 
-### The new inference seam (proposal)
+### The inference seam, as built
+
+`src/remoeba/inference/`:
+
+| Module | What it does |
+|---|---|
+| `wire.py` | Pure. Builds a pinned request body from a binding, a message list, tools and a profile's effective settings. Checks a body against the class's pin and the pinned endpoint's capabilities. Turns each HTTP exchange into one outcome kind. |
+| `transport.py` | `HttpTransport`: HTTPS with the standard library only, the one object that holds the key, cancellable per call. `FakeTransport`: scripted or deterministic OpenRouter-shaped replies, and a record of every body it received. |
+| `credentials.py` | Reads the key from the environment (never from config). Builds child environments with it removed. Redacts it from anything returned. |
+| `service.py` | The inference service process. Its RPC token goes to the supervisor only, so no mind can call a model directly. |
+
+The service's methods:
 
 ```
-complete(request) -> response
-  request:  messages[], tools[], model_binding, sampling{}, max_output_tokens,
-            caller (role/work/turn), deadline
-  response: message (content | tool_calls), finish_reason,
-            usage{prompt, completion, cached}, reported model,
-            system_fingerprint, response_id, latency, cost, retry count
-cancel(call_id)
-capabilities(endpoint) -> declared and probed features (R7)
-health() -> reachability, rate-limit headroom, spend against ceilings
+health()                                    no network: answerable during outages (I25)
+capabilities(model_class?)                  binding + pinned endpoint's declared capabilities
+prepare(model_class, messages, settings, tools?) -> {body, sha256, binding}
+send(model_class, body, sha256, call_id)    -> report: kind, content, tool_calls, usage,
+                                               cost, reported model, attempts, raw response
+                                               and its digest, served_by: unconfirmed
+cancel(call_id)                             closes the socket; billing may still occur
+confirm_served(model_class, response_id)    reads /generation: who served it, matches pin?
 ```
 
-The Harness commits the request body as a blob **before** sending it (R2) and
-the response as a blob after it arrives. The turn record points to both.
+The call sequence the supervisor will follow:
+
+1. `prepare`: the service builds the body and refuses anything the pinned
+   endpoint doesn't support.
+2. The supervisor **commits the body as a blob** with a `model.requested`
+   event (R2).
+3. `send` with that body and digest. The service refuses a body whose digest
+   doesn't match, re-checks the pin, and sends exactly those bytes.
+4. The supervisor commits the raw response and the report.
+5. Later, `confirm_served` records which upstream actually answered (R3).
+
+The service **writes nothing**: the supervisor is the single writer (I1).
+At startup the service resolves every class's pinned endpoint and refuses to
+start if one is missing or lacks native tool calling.
+
+Not built yet: streaming (cancellation currently closes a non-streamed
+request), spend ceilings (R4 needs accumulated state, so they belong to the
+arbiter), and the supervisor side of steps 2, 4 and 5.
 
 ## 4. Leave behind
 
@@ -98,7 +124,23 @@ the response as a blob after it arrives. The turn record points to both.
 `BENCHMARKS.md`. These describe the local-model ancestor and are kept for
 reference only.
 
-## Decisions to make before the rewrite
+## How to port against the taxonomy
+
+`docs/INVARIANTS.md` classifies every Amoeba invariant by **why it existed**
+(principle, mechanism protecting a principle, policy, substrate) and names
+the enforcement point (E1–E9) it belongs at in Remoeba. When porting a
+module:
+
+- carry **principles** as they are, with their tests and mutations;
+- for a **mechanism**, port the named law (L-STRUCTURE, L-CACHE, …), not the
+  code that enforced it locally;
+- for a **policy**, keep the concept and re-derive its numbers against the
+  model class, cost and rate limits. A default value copied from Amoeba needs
+  a reason other than having been there;
+- drop **substrate**, and delete the configuration that went with it rather
+  than leaving it unwired.
+
+## Decisions
 
 1. **Does a role process hold its transcript?** **Decided 2026-09-25: no.**
    Each turn reads its message list from the durable record. I94 (handover of
@@ -156,6 +198,14 @@ reference only.
    section. It is OpenAI-format, so a direct OpenAI or local vLLM endpoint
    remains possible later behind the same seam.
 
+6. **Neuocytes: processes or pooled workers?** **Decided 2026-09-25:
+   processes, for the first port.** A neuocyte no longer owns a KV session,
+   but process isolation still gives a crash boundary, an OS-resource
+   boundary, a credential boundary (it holds only the neuocyte scope token,
+   and `child_environment` has removed the provider key) and a sandbox
+   boundary. Pooled workers may prove safe and worthwhile, but that should be
+   shown by experiment once Remoeba runs, not assumed before it does.
+
 ## OpenRouter
 
 These facts were checked against OpenRouter's documentation and its public
@@ -206,9 +256,9 @@ support `tools`, 359 `seed`, 217 `top_k`, and 12 `parallel_tool_calls`.
 
 ## Verification
 
-`scripts/verify_invariants.py` carries only the mutations whose code **and**
-named tests exist here: 21 invariants. Add Amoeba's entries back as their
-modules are ported.
+`scripts/verify_invariants.py` carries the mutations whose code **and**
+named tests exist here: 21 carried from Amoeba, plus 24 for the inference
+service. Add Amoeba's entries back as their modules are ported.
 
 Two notes for its future:
 
@@ -220,3 +270,19 @@ Two notes for its future:
   **not** carried. It parses `ARCHITECTURE.md`. Bring it back once Remoeba has
   its own invariant document in that format, rather than pointing it at the
   ancestor's.
+
+## Defects fixed in carried code
+
+All three are also present in Amoeba. Each is defended by a test that fails
+on the original code, and by a mutation in `scripts/verify_invariants.py`.
+
+| Id | Defect | Fix |
+|---|---|---|
+| RPC-HANDSHAKE | `RpcClient.connect` spread the server's error object into `RpcError`, and its `message` collided with `MindError`'s own argument. A refused token surfaced as a `TypeError`, so it looked like a crash in the caller. | Remote values are renamed on the way in: the code as `remote_code`, the message as `reason`. The remote code is never let in as `code`, which is `MindError`'s class attribute. |
+| RPC-RELAY | `RpcClient.call` spread the server's `details` in the same way. An error relayed across two hops already carries `remote_code`, so the second hop's `RpcError` got that keyword twice. Any refusal passing role → supervisor → inference arrived as a `TypeError` with its reason lost. | One helper, `_remote_error`, builds every `RpcError` from a peer's error. A detail with a reserved name is kept under a `remote_` prefix (`remote_code` → `remote_remote_code`), so every hop's code survives and nothing is dropped. |
+| MODELVARS-STOPS | `validate_model_vars` kept the first 8 `stop_sequences` and silently dropped the rest, so a profile claimed to stop on text it no longer stopped on. | A list longer than `MAX_STOP_SEQUENCES` (8, the bound already applied) is refused. Every list accepted before is still accepted whole. |
+
+Still open for Remoeba: OpenAI-format endpoints commonly accept fewer stop
+sequences (often 4). The binding should check the list against the pinned
+endpoint rather than a constant, which needs a verified per-endpoint limit
+first.

@@ -39,6 +39,32 @@ class RpcError(MindError):
     code = "rpc_error"
 
 
+# Names RpcError itself binds. A remote value must never arrive under one of
+# them: `message` collides with MindError's own argument, and `remote_code` is
+# how the *remote* code is recorded -- so an error relayed across two hops,
+# which already carries a `remote_code` detail, collided with the one this
+# hop adds and surfaced as a TypeError with the original reason lost. The
+# remote code itself is never let in as `code`, which is MindError's class
+# attribute and would be a different meaning under the same name.
+_RESERVED_DETAIL_NAMES = ("message", "remote_code")
+
+
+def _remote_error(message: str, err: dict[str, Any]) -> "RpcError":
+    """An RpcError for a refusal a peer sent, renaming on the way in.
+
+    Nothing the peer said is dropped: a detail whose name is reserved is kept
+    under a `remote_` prefix, so each hop's code survives beside the next.
+    """
+    details = dict(err.get("details") or {})
+    for name in _RESERVED_DETAIL_NAMES:
+        if name in details:
+            renamed = "remote_" + name
+            while renamed in details or renamed in _RESERVED_DETAIL_NAMES:
+                renamed = "remote_" + renamed
+            details[renamed] = details.pop(name)
+    return RpcError(message, remote_code=err.get("code"), **details)
+
+
 def read_or_create_token(path: Path) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -242,7 +268,15 @@ class RpcClient:
                 self._write({"token": self.token})
                 resp = self._read()
                 if not resp.get("ok"):
-                    raise RpcError("control handshake rejected", **(resp.get("error") or {}))
+                    # The server's error carries its own `message`, which as a
+                    # keyword collided with RpcError's: a refused handshake
+                    # surfaced as a TypeError, indistinguishable from a bug in
+                    # the caller. Shaped the way `call` reports errors instead.
+                    err = resp.get("error") or {}
+                    raise _remote_error(
+                        "control handshake rejected",
+                        {"code": err.get("code"),
+                         "details": {"reason": err.get("message")}})
                 return resp["result"]
             except (ConnectionError, OSError) as exc:
                 last = exc
@@ -301,8 +335,7 @@ class RpcClient:
                                expected=req_id, got=resp.get("id"))
             if not resp.get("ok"):
                 err = resp.get("error") or {}
-                raise RpcError(err.get("message", "rpc failed"),
-                               remote_code=err.get("code"), **(err.get("details") or {}))
+                raise _remote_error(err.get("message", "rpc failed"), err)
             return resp.get("result")
 
     def __enter__(self) -> "RpcClient":

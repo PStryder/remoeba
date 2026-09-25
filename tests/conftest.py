@@ -25,8 +25,6 @@ from remoeba.mind import Mind  # noqa: E402
 def cfg(tmp_path: Path) -> Config:
     c = Config()
     c.state_dir = tmp_path / "state"
-    c.runtime_dir = tmp_path / "runtime"
-    c.models_dir = tmp_path / "models"
     c.ensure_dirs()
     return c
 

@@ -122,7 +122,7 @@ def test_the_defaults_need_no_configuration_to_be_valid():
     from remoeba.config import Config
 
     cfg = Config()
-    for name in ("state_dir", "runtime_dir", "models_dir"):
+    for name in ("state_dir",):
         value = getattr(cfg, name)
         assert not value.is_absolute(), f"{name} defaults to an absolute path"
         assert MACHINE_PATH.search(str(value)) is None

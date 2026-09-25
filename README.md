@@ -32,16 +32,24 @@ the rename, and is shown to still hold:
   state-directory hardening;
 - loopback RPC and the authority scope tables.
 
-There is **no inference and no Harness process yet**. Nothing here can think.
+**The inference service** is built (`src/remoeba/inference/`). It is the
+only process that holds the OpenRouter key. It sends only request bodies
+whose digest the Harness committed, pins every call to one endpoint with
+fallbacks off, requires every parameter, and denies data collection by
+default. Every outcome is classified, so a rate limit, credit exhaustion,
+filter or provider error is never mistaken for the model finishing.
 
-The carried test suite passes, and `scripts/verify_invariants.py` confirms that
-each carried invariant's tests fail when the guarantee is removed.
+There is **no supervisor, and there are no roles, yet**. Nothing calls the
+service, so nothing here thinks.
+
+The test suite passes, and `scripts/verify_invariants.py` confirms that each
+defended invariant's tests fail when the guarantee is removed.
 
 ## Documents
 
 | Document | Contents |
 |---|---|
-| [docs/INVARIANTS.md](docs/INVARIANTS.md) | Every Amoeba invariant, marked **Carry**, **Adapt** or **Drop** for remote inference, plus the new invariants remote inference needs (credential, egress, spend, rate limits, provider refusals). |
+| [docs/INVARIANTS.md](docs/INVARIANTS.md) | Every Amoeba invariant classified by **why it existed** (organism principle, mechanism protecting a principle, resource policy, or local substrate), what Remoeba does with it, and where it is enforced. Also the laws extracted from dropped mechanisms, the hardware-sized numbers to re-derive, and the new invariants remote inference needs. |
 | [docs/PORTING.md](docs/PORTING.md) | What was copied, what to port next, what to rewrite, what to leave behind; the proposed inference seam; the decisions to make first. |
 | [docs/amoeba/](docs/amoeba/) | Amoeba's documents, frozen. They describe the local-model ancestor. |
 

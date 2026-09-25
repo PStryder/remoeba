@@ -2,10 +2,9 @@
 #
 #   cp config.example.toml config.toml
 #
-# Only what Remoeba actually runs today is here. The remote inference
-# configuration -- endpoints, model classes, spend ceilings, and where the API
-# credential comes from -- does not exist yet; see docs/PORTING.md. The
-# credential itself will never live in this file.
+# The provider credential is never in this file: [inference].api_key_env
+# names the environment variable the inference service reads it from, and no
+# other process is given it.
 #
 # `state_dir` is where the organism keeps its database, blobs and sandbox.
 # Leave it relative and it sits beside the checkout, or point it anywhere.
@@ -13,6 +12,29 @@
 # file.
 state_dir = "state"
 log_level = "INFO"
+
+[inference]
+# "fake" answers deterministically and labels every result simulated.
+# "openrouter" calls https://openrouter.ai and needs the key in the environment.
+provider    = "fake"
+api_key_env = "OPENROUTER_API_KEY"
+request_timeout_seconds = 300.0
+max_retries             = 3       # for 429 and provider outages only
+max_retry_wait_seconds  = 60.0    # a longer Retry-After is not waited for
+
+# A model class is what a governed profile names. Each maps to one model and
+# ONE pinned endpoint: on OpenRouter a model id covers several deployments
+# with different quantizations, context windows and parameter support, and
+# every call runs on the pinned one or not at all. Find endpoint slugs at
+#   https://openrouter.ai/api/v1/models/<model id>/endpoints   (the "tag" field)
+# The endpoint must support native tool calling, or the service refuses to
+# start.
+#
+# [inference.classes."ego.reasoning"]
+# model           = "your-model/id"
+# endpoint        = "provider/variant"
+# data_collection = "deny"     # the default; "allow" only if you mean it
+# zdr             = false      # true restricts to zero-data-retention endpoints
 
 [sandbox]
 enabled        = true

@@ -1,13 +1,17 @@
 """Configuration loading.
 
-All absolute paths (runtime binaries, model weights, durable state) live in the
-config file so that third-party runtimes, weights, application source and
-runtime data stay in separate trees.
+Durable state lives wherever `state_dir` says, outside the source tree. Model
+execution is configured under `[inference]`: which provider, and which
+concrete model and pinned endpoint each *model class* resolves to. A governed
+profile names a class; this file decides what the class means (docs/PORTING.md,
+decision 2). The provider credential is never in this file -- only the name of
+the environment variable that holds it.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -24,22 +28,6 @@ class HomeostasisSettings:
     min_seconds_between_rejuvenations: float = 120.0
     max_rejuvenations_per_hour: int = 12
     auto_rejuvenate: bool = True
-
-
-@dataclass(slots=True)
-class BackendConfig:
-    kind: str = "deterministic"          # deterministic | llama_cpp
-    lib_path: str = ""                   # absolute path to llama.dll (llama_cpp)
-    model_path: str = ""                 # absolute path to .gguf
-    n_gpu_layers: int = -1               # -1 = offload all
-    n_ctx: int = 16384                   # TOTAL KV cells across all sequences
-    n_seq_max: int = 8                   # max concurrent sequences in the context
-    n_batch: int = 1024
-    n_ubatch: int = 512
-    n_threads: int = 8
-    flash_attn: bool = True
-    type_k: str = "f16"
-    type_v: str = "f16"
 
 
 @dataclass(slots=True)
@@ -114,23 +102,6 @@ class SandboxConfig:
     max_scratch_bytes: int = 268435456
     max_artifact_bytes: int = 16777216
     max_concurrent: int = 4
-
-
-@dataclass(slots=True)
-class BatchingConfig:
-    """Grouping concurrent generations into one decode step.
-
-    Deliberately has no wait: an aggregator that pauses for company charges
-    every request that pause even when nothing else is running. Batches here
-    form only from requests that were already waiting, so the idle path is
-    exactly as fast as it was before.
-    """
-
-    enabled: bool = True
-
-    # Most sessions decoded together. A ceiling rather than a target: the
-    # engine holds one KV cache and a batch that is too wide starts evicting.
-    max_batch: int = 8
 
 
 @dataclass(slots=True)
@@ -331,14 +302,10 @@ def _location(variable: str, default: str) -> Path:
 
 @dataclass(slots=True)
 class Config:
-    # Relative to the working directory, and all three are in `.gitignore`:
+    # Relative to the working directory, and in `.gitignore`:
     # running the organism from a checkout must not put runtime state into it.
     state_dir: Path = field(
         default_factory=lambda: _location("REMOEBA_STATE_DIR", "state"))
-    runtime_dir: Path = field(
-        default_factory=lambda: _location("REMOEBA_RUNTIME_DIR", "runtime"))
-    models_dir: Path = field(
-        default_factory=lambda: _location("REMOEBA_MODELS_DIR", "models"))
     supervisor_host: str = "127.0.0.1"
     supervisor_port: int = 8711
     inference_port: int = 8712
@@ -350,11 +317,10 @@ class Config:
     api_host: str = "127.0.0.1"
     api_port: int = 8715
     api_enabled: bool = True
-    backend: BackendConfig = field(default_factory=BackendConfig)
+    inference: "InferenceConfig" = field(default_factory=lambda: InferenceConfig())
     arbiter: ArbiterConfig = field(default_factory=ArbiterConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     retention: "RetentionConfig" = field(default_factory=lambda: RetentionConfig())
-    batching: "BatchingConfig" = field(default_factory=lambda: BatchingConfig())
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     filespace: FilespaceConfig = field(default_factory=FilespaceConfig)
     homeostasis: "HomeostasisSettings" = field(default_factory=lambda: HomeostasisSettings())
@@ -446,7 +412,7 @@ class Config:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        for k in ("state_dir", "runtime_dir", "models_dir", "source_path"):
+        for k in ("state_dir", "source_path"):
             d[k] = str(d[k]) if d[k] is not None else None
         return d
 
@@ -508,14 +474,22 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     cfg.source_path = p
     top = {k: v for k, v in raw.items() if not isinstance(v, dict)}
     for key, value in top.items():
-        if key in ("state_dir", "runtime_dir", "models_dir"):
+        if key == "state_dir":
             setattr(cfg, key, Path(value))
         elif hasattr(cfg, key):
             setattr(cfg, key, value)
         else:
             raise ValueError(f"unknown config key {key}")
     if "backend" in raw:
-        _apply(cfg.backend, raw["backend"], "backend")
+        raise ValueError(
+            "[backend] configured a local llama.cpp model and does not exist in "
+            "Remoeba. Model execution is configured under [inference] and "
+            "[inference.classes.<name>]; see config.example.toml.")
+    if "batching" in raw:
+        raise ValueError("[batching] does not exist in Remoeba: a remote provider "
+                         "is not batched by this process.")
+    if "inference" in raw:
+        _load_inference(cfg.inference, raw["inference"])
     if "arbiter" in raw:
         _apply(cfg.arbiter, raw["arbiter"], "arbiter")
     if "scheduler" in raw:
@@ -551,3 +525,92 @@ def _root(raw: dict[str, Any], index: int) -> FilespaceRoot:
             f"filespace.roots[{index}].mode must be read_only or read_write, "
             f"got {root.mode!r}")
     return root
+
+
+# ---------------------------------------------------------------------------
+# remote inference
+# ---------------------------------------------------------------------------
+PROVIDERS = ("openrouter", "fake")
+DATA_COLLECTION = ("deny", "allow")
+_CLASS_NAME = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+
+
+@dataclass(slots=True)
+class ModelClassConfig:
+    """What one model class resolves to.
+
+    A governed profile names a class; this is the operator's resource decision
+    about what that class means. Repointing it changes what is born next and
+    nothing that is alive (I53).
+
+    ``endpoint`` is not optional. On OpenRouter one model id is many
+    deployments -- different quantizations, context windows and parameter
+    support -- and routing falls back between them by default. A class without
+    a pinned endpoint would be bound to whichever deployment answered, which is
+    not a binding at all.
+    """
+
+    model: str = ""                 # e.g. "meta-llama/llama-3.3-70b-instruct"
+    endpoint: str = ""              # full endpoint slug, e.g. "deepinfra/turbo"
+    data_collection: str = "deny"   # "allow" only when stated here
+    zdr: bool = False               # restrict to zero-data-retention endpoints
+
+
+@dataclass(slots=True)
+class InferenceConfig:
+    """How the inference service reaches a provider.
+
+    The credential is read from the environment variable named by
+    ``api_key_env``, by the inference service process only (R1). It is never
+    a configuration value, so a config file can be shared, committed or
+    logged without carrying it.
+    """
+
+    provider: str = "fake"          # openrouter | fake
+    base_url: str = "https://openrouter.ai/api/v1"
+    api_key_env: str = "OPENROUTER_API_KEY"
+    request_timeout_seconds: float = 300.0
+    # Bounded retry of rate-limited or unavailable calls (R5). A retry after a
+    # timeout may be billed twice; every attempt is reported.
+    max_retries: int = 3
+    retry_base_seconds: float = 2.0
+    max_retry_wait_seconds: float = 60.0
+    classes: dict[str, ModelClassConfig] = field(default_factory=dict)
+
+
+def _load_inference(target: InferenceConfig, raw: dict[str, Any]) -> None:
+    data = dict(raw)
+    classes = data.pop("classes", {}) or {}
+    _apply(target, data, "inference")
+    if target.provider not in PROVIDERS:
+        raise ValueError(f"[inference].provider must be one of {PROVIDERS}, "
+                         f"got {target.provider!r}")
+    if not isinstance(target.api_key_env, str) or not target.api_key_env.strip():
+        raise ValueError("[inference].api_key_env must name an environment variable")
+    if target.max_retries < 0:
+        raise ValueError("[inference].max_retries must not be negative")
+    target.classes = {name: _model_class(name, spec) for name, spec in classes.items()}
+
+
+def _model_class(name: str, raw: Any) -> ModelClassConfig:
+    where = f"inference.classes.{name}"
+    if not _CLASS_NAME.match(name):
+        raise ValueError(f"[{where}] is not a valid class name: use lowercase "
+                         "dotted components, e.g. \"ego.reasoning\"")
+    if not isinstance(raw, dict):
+        raise ValueError(f"[{where}] must be a table")
+    unknown = set(raw) - set(ModelClassConfig.__slots__)
+    if unknown:
+        raise ValueError(f"unknown [{where}] key(s): {sorted(unknown)}")
+    spec = ModelClassConfig(**raw)
+    for key in ("model", "endpoint"):
+        if not isinstance(getattr(spec, key), str) or not getattr(spec, key).strip():
+            # No default model and no default endpoint: a class that does not
+            # say what it is must not quietly become something.
+            raise ValueError(f"[{where}].{key} is required")
+    if spec.data_collection not in DATA_COLLECTION:
+        raise ValueError(f"[{where}].data_collection must be one of "
+                         f"{DATA_COLLECTION}, got {spec.data_collection!r}")
+    if not isinstance(spec.zdr, bool):
+        raise ValueError(f"[{where}].zdr must be true or false")
+    return spec

@@ -51,6 +51,10 @@ ROOTS = ("ego", "id")
 _COMPONENT = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_DEPTH = 8
 MAX_COMPONENT_CHARS = 48
+# Most stop sequences a profile may state. A longer list is refused, never
+# shortened: keeping the first eight and dropping the rest silently would be a
+# profile claiming to stop on text it no longer stops on.
+MAX_STOP_SEQUENCES = 8
 
 # ---------------------------------------------------------------------------
 # Prompt composition
@@ -122,12 +126,19 @@ BACKEND_ARGUMENT = {
     "top_k": "top_k",
     "max_output_tokens": "max_tokens",
     "seed": "seed",
-    "stop_sequences": "stop_strings",
+    "stop_sequences": "stop",
 }
-"""How each profile variable reaches the backend.
+"""How each profile variable is named on the wire (OpenAI chat format).
 
-A variable with no entry here would be one the backend cannot apply, which is
-why there are none: the map is total over :data:`MODEL_VARS` and a test says so.
+A variable with no entry here would be one no request could carry, which is
+why there are none: the map is total over :data:`MODEL_VARS`.
+
+Being nameable is not being applied. Whether the *pinned endpoint* accepts a
+parameter is a separate check made against its declared
+`supported_parameters` (remoeba.inference.wire, R7): `top_k`, for one, is
+supported by fewer than half of OpenRouter's models, and a profile binding it
+against an endpoint that does not must be refused rather than sent and
+ignored.
 """
 
 
@@ -288,7 +299,12 @@ def validate_model_vars(values: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, (list, tuple)) or not all(
                     isinstance(v, str) for v in value):
                 raise NamespaceError(f"{name} must be a list of strings")
-            out[name] = [str(v) for v in value][:8]
+            if len(value) > MAX_STOP_SEQUENCES:
+                raise NamespaceError(
+                    f"{name} lists {len(value)} entries; at most "
+                    f"{MAX_STOP_SEQUENCES} are allowed, and a longer list is "
+                    "refused rather than shortened")
+            out[name] = [str(v) for v in value]
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise NamespaceError(f"{name} must be a number, not "
