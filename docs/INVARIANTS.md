@@ -165,8 +165,11 @@ and a Remoeba on one machine cannot collide.
 | I49 – I56 | Prompt-library governance | Carry | `pending` (code is here; its tests need the role layer) |
 | I57 | An incarnation binding freezes bytes, not a pointer | Adapt | `pending` |
 
-**I57** also has to freeze the **model binding**: endpoint, requested model,
-and the model the first response reported (R3).
+**I57** also has to freeze the **model binding**: the model class the profile
+named, the endpoint and model that class resolved to at birth, and the model
+the first response reported (R3). A profile names a class; configuration maps
+the class to a model (PORTING.md, decision 2). Repointing a class affects new
+incarnations only, per I53.
 
 **Model variables.** The rule carries exactly — *an unknown name is refused
 rather than dropped* — but the set is now per provider, not fixed. OpenAI-format
@@ -182,7 +185,7 @@ binding, not silently ignored — that is precisely the failure I135 records.
 |---|---|---|---|---|
 | I64 | One bounded turn at a time | Carry | `pending` | |
 | I65 | Input during a turn waits for the next boundary | Carry | `pending` | |
-| I66 | Turn-end reasons are first class | Adapt | `pending` | Derived from `finish_reason` and HTTP outcome. New distinct reasons: `content_filter`, `rate_limited`, `provider_unavailable`, `spend_exhausted`. None may collapse into `backend_error`. |
+| I66 | Turn-end reasons are first class | Adapt | `pending` | Derived from `finish_reason` and HTTP outcome. New distinct reasons: `content_filter`, `rate_limited`, `provider_unavailable`, `spend_exhausted` (Remoeba's own ceiling), `credits_exhausted` (OpenRouter's 402). None may collapse into `backend_error`, and OpenRouter's normalized `finish_reason: error` is never `model_stop`. |
 | I67 | The Harness continues an interrupted thought | Carry | `pending` | |
 | I68 / I68b | Continuation is bounded; recovery and progress spend different allowances | Carry | `pending` | Unbounded continuation against a paid API is a furnace with an invoice. |
 | I69 | A role that dies mid-turn does not swallow its inputs | Carry | `pending` | |
@@ -199,7 +202,7 @@ binding, not silently ignored — that is precisely the failure I135 records.
 | I90 | Batching changes throughput, never outcomes | **Drop** | — | No batching. Its surviving half is R5: concurrent requests are independent, and one caller's 429 or error is that caller's alone. |
 | I91 / I92 | Specialisations; wake on owned work | Carry | `pending` | |
 | I93 | Context is reclaimed by dropping finished work | Adapt | `pending` | Far easier: a turn is a range of whole messages, not a token span. The policy (settled work goes oldest first; owed work never) carries unchanged. |
-| I94 | Everyone holding a session handle learns when it changes | **Drop** | — | Existed because two parties held a handle to a remote KV session. If role processes hold **no transcript** and each turn reads its messages from the record, there is one holder and nothing to hand over. That is a design choice to make deliberately (see PORTING.md). |
+| I94 | Everyone holding a session handle learns when it changes | **Drop** | — | Existed because two parties held a handle to a remote KV session. If role processes hold **no transcript** and each turn reads its messages from the record, there is one holder and nothing to hand over. Decided that way on 2026-09-25 (PORTING.md, decision 1). |
 | I95 | What became of an attempt travels with what it said | Carry | `pending` | |
 | I96 | A session carries its own allowance | Adapt | `pending` | Allowance in tokens per role, bounded above by the bound model's context window. |
 | I97 | What a session may think and what it costs are different | Adapt | `pending` | Now literal: tokens versus money. A worker forked from a large Ego prefix pays for that prefix **on every call**, discounted only by whatever the provider caches. |
@@ -263,15 +266,27 @@ request record). Checked by searching the whole state tree for the key.
 crosses.** Every byte in a model request leaves the machine. The request
 body is content-addressed and committed **before** it is sent, so exactly
 what left is provable afterwards. Nothing enters a request except through
-Harness-built context. Open question: whether a filespace root or an
-attachment can be marked *no-egress*, so that its bytes may be processed in a
-sandbox but never placed in model context.
+Harness-built context. With OpenRouter, "leaves the machine" means it reaches
+OpenRouter **and** the upstream provider serving the call, which is why
+`data_collection: "deny"` is the default (PORTING.md, OpenRouter).
+
+Egress controls exist from the start (PORTING.md, decision 4). Every
+filespace root states `egress = "allowed" | "denied"` with no default. A
+client may admit an attachment as `no_egress`. The mark is a provenance
+taint that follows everything derived from the source. A tainted result may
+be stored, proposed and promoted, but never placed in model context. The
+check sits where the request body is built and committed, so a tainted byte
+in a request body is an integrity failure.
 
 **R3. The model that answered is recorded, not assumed.** The requested
 model, the model the response reports, `system_fingerprint` where given, and
 the response id all go on the turn. An alias that starts resolving to a
 different model becomes visible in the record rather than silently changing
-the organism.
+the organism. On OpenRouter this also means **the upstream endpoint that
+served the call**: one model ID covers deployments with different
+quantizations and context windows. A model class therefore pins its endpoint
+with fallbacks off, and the serving provider is recorded from evidence (the
+response, or the generation-stats endpoint), never inferred from the pin.
 
 **R4. Spend is bounded, receipted, and refuses rather than overruns.** Every
 call records usage and a cost priced from a versioned price table. Ceilings
@@ -279,6 +294,9 @@ per work item, per role and per period refuse new calls when reached, as their
 own stop reason. A model that cannot be priced cannot be called while a
 ceiling is configured, because "unknown cost" cannot be checked against a
 limit. Tokens billed for a cancelled or abandoned request are recorded too.
+OpenRouter reports `usage.cost` but documents it as optional, so a response
+without it is unpriced rather than free. The price table is the fallback,
+and the record says which source priced the call.
 
 **R5. Rate limits and provider failures are distinct, bounded and local.** A
 429 is `rate_limited`, an outage is `provider_unavailable`, and neither
@@ -300,7 +318,11 @@ claimed.
 approximated.** Tool calling, JSON-schema output, `seed`, `top_k`, assistant
 prefill and parallel tool calls are declared per configured endpoint and
 probed where cheap. A profile or a verb that needs a missing one is refused
-at binding, not degraded at call time.
+at binding, not degraded at call time. Native tool calling is required of
+every model class (PORTING.md, decision 3). OpenRouter ignores unsupported
+parameters by default, so every call sets `provider.require_parameters:
+true`. Capabilities are read from the **pinned endpoint**, never from the
+model-level list, which is a union across endpoints.
 
 **R8. Nondeterminism is stated.** `seed` is best-effort at most, and no
 result is described as reproducible.

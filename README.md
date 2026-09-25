@@ -6,7 +6,8 @@ A remote API implementation of an AI swarm harness - for 'experimentation'....
 Remoeba is [Amoeba](https://github.com/PStryder/amoeba)'s persistent cognitive
 architecture — Ego, Id, disposable neuocytes, and a Harness that owns reality —
 driven by **remote OpenAI-format chat APIs** instead of one resident local
-model.
+model. The target provider is [OpenRouter](https://openrouter.ai), with
+model endpoints pinned rather than routed.
 
 Amoeba's premise carries over unchanged:
 

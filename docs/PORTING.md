@@ -100,26 +100,109 @@ reference only.
 
 ## Decisions to make before the rewrite
 
-1. **Does a role process hold its transcript?** Recommended: no. If each turn
-   reads its message list from the durable record, I94 (handover of session
-   handles) and most of I93/I122 disappear, and a role restart loses nothing
-   because it held nothing. The cost is re-reading the list each turn, which is
-   cheap next to a remote call.
-2. **Where does model choice live?** Amoeba's README says *model selection is
-   cognitive policy; model execution is a resource*. That splits cleanly: a
-   governed profile names a model **class** (for example `ego.reasoning`), and
-   configuration maps that class to an endpoint and model. So approving a
-   profile can change which class a mind uses, and repointing a class is an
-   operator resource decision recorded in the binding (I57, R3).
-3. **Native tool calling only, or a text fallback?** Recommended: native only,
-   declared as a required capability (R7). A text-parsing fallback brings back
-   the whole I113/I115/I124 family.
-4. **Egress controls (R2)** — whether no-egress roots or attachments exist
-   from the start.
-5. **Which providers?** "OpenAI format" covers OpenAI, OpenRouter, and local
-   servers such as vLLM or llama-server. They differ on `seed`, `top_k`, usage
-   reporting, cache reporting and `system_fingerprint`. That is what R7's
-   per-endpoint capability declaration is for.
+1. **Does a role process hold its transcript?** **Decided 2026-09-25: no.**
+   Each turn reads its message list from the durable record. I94 (handover of
+   session handles) and most of I93/I122 disappear, and a role restart loses
+   nothing because it held nothing. The cost is re-reading the list each turn,
+   which is cheap next to a remote call. Consequence for the rewrite: a role
+   process holds only its scope credential and the turn it has claimed. Any
+   transcript state that lives in a role process is a defect.
+2. **Where does model choice live?** **Decided 2026-09-25: split.** Amoeba's
+   README says *model selection is cognitive policy; model execution is a
+   resource*. So a governed profile names a model **class** (for example
+   `ego.reasoning`), and configuration maps that class to an endpoint and
+   model. Approving a profile can change which class a mind uses; repointing a
+   class is an operator resource decision. Consequences for the rewrite:
+   - The class is a profile setting, inherited and governed like the model
+     variables. A profile naming a class that configuration does not map is
+     refused at binding, not given a default model. An unknown name is refused
+     rather than dropped (the model-variables rule).
+   - The incarnation binding (I57) records the class **and** what it resolved
+     to at birth (endpoint and model), plus what the first response reported
+     (R3). Repointing a class changes what is born next, not what is alive
+     (I53). A running mind keeps the model it was bound to.
+   - The class-to-model mapping is configuration, so it is not in the prompt
+     library and is not reachable from any role scope. No mind can repoint its
+     own class.
+3. **Native tool calling only, or a text fallback?** **Decided 2026-09-25:
+   native only.** `tools` is a required capability (R7). A model class whose
+   pinned endpoint does not support it is refused when configuration loads,
+   not discovered mid-turn. There is no text-parsing fallback: it would bring
+   back the whole I113/I115/I124 family. Tool-call-shaped text in `content` is
+   still recognised and refused (I115), because a model can write one without
+   using the tools channel.
+4. **Egress controls (R2).** **Decided 2026-09-25: built in from the start.**
+   - Every filespace root must state `egress = "allowed"` or `"denied"`. There
+     is no default, and a root without one is refused when configuration loads,
+     the same stance as I37 (no default destination).
+   - An external client may mark an attachment `no_egress` when it is
+     admitted. The default is allowed, because the client chose to send it to
+     an organism that thinks remotely. The mark is part of the input's
+     admitted record and cannot be changed later (I87).
+   - The mark is a **provenance taint**, not a content check. Anything derived
+     from a denied source carries the taint: a sandbox run that read it, a
+     tool result computed from it, an artifact produced from it. A tainted
+     result can be stored, proposed and promoted, but it can never be placed
+     in model context. The model is told a result exists and is withheld, and
+     why. It never sees the content.
+   - The last point is the check. The Harness asserts it when it builds a
+     request, which is also the point where the request body is committed
+     (R2). A tainted byte that reaches a request body is an integrity failure,
+     not a policy warning.
+   - Stated plainly: denied data is useful only for work that does not need a
+     model to read it, such as computation whose result goes to a file rather
+     than to a mind. Anything a mind has to reason about leaves the machine.
+5. **Which providers?** **Decided 2026-09-25: OpenRouter.** See the next
+   section. It is OpenAI-format, so a direct OpenAI or local vLLM endpoint
+   remains possible later behind the same seam.
+
+## OpenRouter
+
+These facts were checked against OpenRouter's documentation and its public
+`/api/v1/models` endpoint on 2026-09-25. They shape the inference service
+directly. Re-check them when the service is written, because they come from
+a third party and can change.
+
+**One model ID is many deployments.** `meta-llama/llama-3.3-70b-instruct` has
+11 upstream endpoints (`/api/v1/models/<id>/endpoints`), differing in
+quantization (`fp8`, `bf16`), context length (12,288 vs 131,072), maximum
+output, and supported parameters. One of them does not support `tools`. By
+default OpenRouter may route any call to any of them. So:
+
+| OpenRouter default | Consequence if left alone | Remoeba setting |
+|---|---|---|
+| `provider.allow_fallbacks: true` | Consecutive calls from one mind may run on different quantizations with different context windows. The model a mind is bound to (I15, I57) would be a fiction. | A model class pins `provider.order` (or `only`) with `allow_fallbacks: false`. A pinned endpoint being unavailable is `provider_unavailable` (R5), not a silent switch. |
+| Unsupported parameters are **ignored** | A profile binding `top_k` or `seed` runs without it while the binding claims it applied. That is exactly the failure I135 records. | `provider.require_parameters: true` on every call, plus the check at binding (R7) against the pinned endpoint's `supported_parameters`. |
+| `provider.data_collection: "allow"` | Calls may be routed to providers that store prompts. | `data_collection: "deny"` by default. A model class may relax it only by stating so in configuration, and the binding records which. `zdr: true` is available where a class needs it. |
+
+**What a response gives, and where it goes:**
+
+| Field | Used for |
+|---|---|
+| `id` | Response id on the turn (I70); key for `/api/v1/generation?id=` |
+| `model` | The reported model (R3) |
+| `finish_reason` (normalized: `stop`, `length`, `tool_calls`, `content_filter`, `error`) | Stop reason (I66). `content_filter` is R9. `error` is a provider failure, never `model_stop`. |
+| `native_finish_reason` | Recorded verbatim beside the normalized one |
+| `usage.prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens` | Measured context and spend (I96–I98, I121). Counted by the model's native tokenizer, per OpenRouter. |
+| `usage.cost` | Spend (R4). Documented as optional, so a response without it is **unpriced**, and R4's rule applies. |
+| `system_fingerprint` | Recorded when present (R3) |
+
+**Not yet confirmed:** whether a chat response names the upstream provider
+that served it. The overview schema does not list such a field. The
+generation-stats endpoint is the documented source. The service must record
+the serving provider one way or the other, and must not infer it from the
+pin, because a pin is a request, not evidence.
+
+**Errors:** `402` means credits are exhausted. It is its own stop reason
+(`credits_exhausted`), distinct from Remoeba's own spend ceilings. `429` is
+`rate_limited` (R5). Error bodies carry `code`, `message` and optional
+`metadata` with the upstream's raw error, which is recorded verbatim.
+
+**Capabilities (R7)** come from the pinned endpoint's `supported_parameters`
+and `max_completion_tokens`, not from the model-level list. The model-level
+list is a union across endpoints: the model above lists `tools` although one
+of its endpoints lacks it. Across the 458 models listed on 2026-09-25, 390
+support `tools`, 359 `seed`, 217 `top_k`, and 12 `parallel_tool_calls`.
 
 ## Verification
 
