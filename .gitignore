@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.sqlite3*
+.pytest_cache/
+
+# Runtime state. The default is relative, so an organism run from a checkout
+# keeps its state beside the source without ever putting it in it.
+/state/
+
+# An operator's own configuration. The live file names this machine's paths
+# and, once remote inference exists, where its API credential comes from.
+/config.toml
+/config.test.toml
+.env

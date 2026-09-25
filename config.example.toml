@@ -1,0 +1,31 @@
+# Remoeba configuration -- copy to `config.toml` (which is gitignored).
+#
+#   cp config.example.toml config.toml
+#
+# Only what Remoeba actually runs today is here. The remote inference
+# configuration -- endpoints, model classes, spend ceilings, and where the API
+# credential comes from -- does not exist yet; see docs/PORTING.md. The
+# credential itself will never live in this file.
+#
+# `state_dir` is where the organism keeps its database, blobs and sandbox.
+# Leave it relative and it sits beside the checkout, or point it anywhere.
+# The REMOEBA_STATE_DIR environment variable overrides it without editing a
+# file.
+state_dir = "state"
+log_level = "INFO"
+
+[sandbox]
+enabled        = true
+wall_seconds   = 60.0
+cpu_seconds    = 60.0
+max_concurrent = 4
+
+# Host directories the organism may touch. None by default, so it has no host
+# access until one is configured. Anything a mind reads here may also be sent
+# to a model provider once remote inference exists (docs/INVARIANTS.md, R2).
+#
+# [[filespace.roots]]
+# name        = "work"
+# path        = "C:/Users/YOUR_NAME/remoeba-work"
+# mode        = "read_write"    # read_only | read_write
+# description = "Files the organism may read and write"
