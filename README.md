@@ -50,6 +50,8 @@ defended invariant's tests fail when the guarantee is removed.
 | Document | Contents |
 |---|---|
 | [docs/INVARIANTS.md](docs/INVARIANTS.md) | Every Amoeba invariant classified by **why it existed** (organism principle, mechanism protecting a principle, resource policy, or local substrate), what Remoeba does with it, and where it is enforced. Also the laws extracted from dropped mechanisms, the hardware-sized numbers to re-derive, and the new invariants remote inference needs. |
+| [docs/PLATFORM_PLAN.md](docs/PLATFORM_PLAN.md) | The plan to move to Postgres (many writers, one order), semantic search, and a generic Docker unit that also deploys to Fly. Phases P1–P6 and the decisions behind them. |
+| [docs/PREFIXES.md](docs/PREFIXES.md) | Shared context built once and started from by many workers: typed provenance, Harness-only warming, the worth-it check, and Ego snapshots as a privileged prefix kind. |
 | [docs/PORTING.md](docs/PORTING.md) | What was copied, what to port next, what to rewrite, what to leave behind; the proposed inference seam; the decisions to make first. |
 | [docs/amoeba/](docs/amoeba/) | Amoeba's documents, frozen. They describe the local-model ancestor. |
 

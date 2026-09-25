@@ -169,7 +169,7 @@ and never hand-maintained.
 
 | | Invariant | Why | Remoeba | E | Status |
 |---|---|---|---|---|---|
-| I12 | Only Ego publishes; a snapshot is Ego's actual context | Principle | Re-mechanize: an immutable, content-addressed **prefix of Ego's message list**. Still not a merge, not a summary, and Id's list is never published. | E1, E2 | `pending` |
+| I12 | Only Ego publishes; a snapshot is Ego's actual context | Principle | Re-mechanize: an immutable, content-addressed **prefix of Ego's message list**. Still not a merge, not a summary, and Id's list is never published. It becomes the privileged `ego_context` kind of [prefix](PREFIXES.md), which only Ego's publish path can create (PX8). | E1, E2, E6 | `pending` |
 | I13 | Ego continues after publishing | Principle | Carry (trivially: Ego keeps appending) | E2 | `pending` |
 | I14 | Neuocyte tails are private | Principle | Carry (true by construction) | E2 | `pending` |
 | I15 | Pinned for life | Principle | Re-mechanize: pinned to its snapshot **and its model binding** (class, model, endpoint) | E1, E3 | `pending` |
@@ -253,7 +253,7 @@ Amoeba's.
 | I85, I85b | Delegated work is accountable; lineage is Harness-bound | Principle | Carry | E6, E7 | `pending` |
 | I86 | A result the model cannot see whole says so | Principle | Carry | E7 | `pending` |
 | I87, I88 | Evidence is never pruned; nothing in use is forgotten | Principle | Carry | E1 | `pending` |
-| I89 | Ego chooses what crosses the boundary, never whose | Principle | Carry | E6 | `pending` |
+| I89 | Ego chooses what crosses the boundary, never whose | Principle | Carry the output side: a result reaches only the client that asked. **Changed (2026-09-25):** an external upload may inform other interactions once shared (PX11). | E6 | `pending` |
 | I90 | Batching changes throughput, never outcomes | Mechanism | Becomes **L-THROUGHPUT** | E3, E4 | `verified` at E3 (R5) |
 | I91, I92 | Specialisations; wake on owned work | Principle | Carry | E7 | `pending` |
 | I93 | Context is reclaimed by dropping finished work | Policy | **Redesign.** Settled work goes first and owed work never, as before. But the objective is no longer one scarce resource. A rebuild reclaims tokens *and destroys provider-side prefix reuse*, so homeostasis now balances request cost, cache reuse, context quality, latency and rate pressure. | E8 | `pending` |
@@ -281,7 +281,7 @@ Amoeba's.
 | I125 | A review is only as true as its watermark | Principle + Policy | Carry. A cheap quiet review now saves money, not KV. | E7 | `pending` |
 | I126, I126b | Answering is not thinking; the not-thinking alarm | Principle | Carry. Must tell "the provider is down" (organism-wide) from "this role is broken". | E7 | `pending` |
 | I127–I131 | Reachable counts; not blind when strained; durable delivery; whole requests; non-destructive reset | Principle | Carry. For I128, *strained* is redefined. | E7 | `pending` |
-| I133 | An admitted input is referred to, never moved | Principle | Carry | E7 | `pending` |
+| I133 | An admitted input is referred to, never moved | Principle | Carry "referred to, never moved". **Changed (2026-09-25):** an *external upload* is no longer refused to other interactions. It becomes eligible for organism-wide sharing when reuse pays ([PREFIXES.md](PREFIXES.md), PX11), and every use is attributed to its origin. A client may admit an upload `interaction_only` to opt out, and that mark taints everything derived from it (PX12). | E7 | `pending` |
 | I135 | A binding describes the sampling actually applied | Principle | Carry. Stronger now: the committed request body **is** the call. | E2, E3 | `verified` at E3 (R-REQPARAMS, R7-PARAMS) |
 | I136–I142 | Worker faithfulness; lineage; corroboration; effects; answer dependencies | Principle | Carry. I138: forking a message-list snapshot still passes the forker's evidence roots on as `inherited`. | E7 | `pending` |
 

@@ -326,7 +326,7 @@ guarantee removed), not merely passing.
 | **P2 — Postgres store** | psycopg 3, schema translation with local-model residue removed, M1 writer, M2 roles and grants, migrations, per-test databases, LISTEN/NOTIFY, advisory locks. | Store tests green on Postgres. I1–I8, I11, I84 and M1/M2 mutation-verified. Multi-process writer stress: N writers, chain intact, no lost updates, idempotent replays. |
 | **P3 — Linux host boundary** | nsjail sandbox, POSIX hardening, Linux filespace with egress roots. Windows code removed. | I29–I43 re-verified from inside the container |
 | **P4 — Semantic search** | pgvector + FTS, `embed` in the inference service, indexer queue, scoped search verbs | S1–S6 mutation-verified. Recall quality measured on a fixed query set against the `LIKE` baseline. |
-| **P5 — Harness port** | Supervisor, mailbox, turns, roles, neuocytes, onto Postgres and Linux, once. The inference service commits its own call records. | The ported Amoeba tests and mutations are green. An organism answers a question end to end on OpenRouter. |
+| **P5 — Harness port** | Supervisor, mailbox, turns, roles, neuocytes, onto Postgres and Linux, once. The inference service commits its own call records. Neuocyte birth is written against [prefixes](PREFIXES.md) from the start, with Ego snapshots as the privileged `ego_context` kind. | The ported Amoeba tests and mutations are green. An organism answers a question end to end on OpenRouter. |
 | **P6 — Remote unit** | Streamable HTTP MCP, TLS, loopback-only operator console, backups to S3-compatible storage, runtime requirements documented, `fly.toml` | **Move the volume from Docker on this machine to a Fly machine, restart, and resume in-flight work coherently.** The same image runs in both places. |
 
 P5 is the bulk of the work. P1–P4 exist so that it happens once.
@@ -343,7 +343,7 @@ P5 is the bulk of the work. P1–P4 exist so that it happens once.
 | P0-4 | Cloud platform | **Generic Docker, with Fly supported** (revised the same day from "Fly"). The image is a plain OCI image and assumes nothing platform-specific. Fly is a supported deployment with its own `fly.toml`. Consequences: the sandbox spike must pass under stock Docker **and** on a Fly machine; a runtime that cannot jail gets sandboxing disabled and reported, never an unjailed fallback (§5.1); the network egress allowlist is a deployment-provided layer, not assumed (§6); backups go to any S3-compatible store. |
 | P0-5 | Embedding source | **OpenRouter**, through the inference service. No embedding model in the image, no CPU budget for one. Embedding becomes egress (S6). |
 
-Still open: **your API-capability ideas.** Structured outputs, prompt
-caching, reasoning controls and the like mostly land in the inference service
-and in E2/E8. They don't change P1–P4, but some may change P5's design, so
-they come before P5.
+**API-capability ideas.** The first, shared context built once and started
+from by many workers, is designed in [PREFIXES.md](PREFIXES.md) (decided
+2026-09-25). It changes neuocyte birth, so it is part of P5. Further ideas
+are still to come, and come before P5.
