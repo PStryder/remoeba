@@ -209,8 +209,8 @@ module:
 7. **Platform: Postgres, semantic search, container.** **Decided 2026-09-25**
    (see [PLATFORM_PLAN.md](PLATFORM_PLAN.md), §8): Postgres self-hosted inside
    the unit, with many writers and one order; one image plus one volume;
-   Windows-native support dropped once the Linux boundary is verified; Fly as
-   the cloud target; embeddings from OpenRouter through the inference
+   Windows-native support dropped once the Linux boundary is verified; generic
+   Docker as the target, with Fly supported; embeddings from OpenRouter through the inference
    service. **This reorders the port:** the Harness is ported onto Postgres
    and Linux (plan phase P5), not onto SQLite and Windows.
 

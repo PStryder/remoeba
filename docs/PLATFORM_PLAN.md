@@ -9,7 +9,9 @@ built. It sequences three changes against the invariant taxonomy in
    OpenRouter through the inference service.
 3. **The whole Harness in a container**, with the database and every Remoeba
    artifact inside the unit, so one Remoeba can run on this machine or in the
-   cloud unchanged.
+   cloud unchanged. The target is **generic Docker**: a plain OCI image that
+   runs under any Docker-compatible runtime. **Fly is a supported deployment**
+   (a `fly.toml` and notes), not the design target.
 
 **Confirmed:** "hosted locally" means **self-hosted inside the unit**. The
 unit carries its own Postgres wherever it runs, not a managed database.
@@ -244,13 +246,22 @@ AppContainer is replaced with a namespace jail per sandbox:
 - Alternatives: bubblewrap (smaller, fewer resource controls), or gVisor as
   the runtime for the whole unit (stronger isolation, but platform-dependent
   and heavier).
-- **Spike first.** Namespaces inside Docker usually need a custom seccomp
-  profile or added capabilities, and cloud platforms differ. Fly machines are
-  Firecracker microVMs, where this is normally possible, but that must be
-  shown, not assumed. The spike's exit criterion: a sandbox inside the
-  container cannot open a socket, cannot read `/var/lib/remoeba`, cannot see
-  another sandbox, and cannot write its interpreter, each measured from
-  inside.
+- **Spike first, in two environments: stock Docker and a Fly machine.**
+  Under stock Docker the default seccomp profile often blocks the namespaces
+  a jail needs, so the image ships a documented **runtime requirement**: the
+  seccomp profile or capabilities to run with, plus a `docker run` and
+  compose example. Fly machines are Firecracker microVMs, where this is
+  normally possible, but that must be shown, not assumed. The spike's exit
+  criterion: a sandbox inside the container cannot open a socket, cannot
+  read `/var/lib/remoeba`, cannot see another sandbox, and cannot write its
+  interpreter, each measured from inside.
+- **A startup probe decides, and fails safe.** At start, the Harness
+  attempts a jail and checks those four properties from inside it. If the
+  runtime does not allow it, **sandboxed compute is disabled and reported as
+  disabled**: work that needs it is refused with the reason, and health says
+  why. It never falls back to running code unjailed. This is I30 ("fails
+  safe, never locked") and I33 ("reported, not assumed") applied to the
+  runtime the unit happens to be given.
 - The interpreter is mounted read-only (I32). Only two file descriptors are
   passed into a sandbox (I35).
 
@@ -292,13 +303,14 @@ unwired.
 | Concern | Plan |
 |---|---|
 | **External surface** | MCP over **Streamable HTTP** (stdio cannot cross a network) and the JSON-RPC API, behind TLS. Per-client API keys, where identity is the credential (I48c) and loopback was never authentication (I48d). |
-| **Operator console** | Never public. Reachable only over a private network (WireGuard, Tailscale, or the platform's private network), plus the operator session credential (I48f). |
+| **Operator console** | Never public. It listens on the container's loopback only and is reached through a tunnel the operator provides: SSH, WireGuard or Tailscale generically, and `fly proxy` or Fly's private network on Fly. The operator session credential is still required (I48f). |
 | **Provider credential** | A platform secret injected into the **inference service only**. `child_environment` still scrubs it from everything else (R1). |
-| **Network egress** | Deny by default at the container or platform firewall, allowing only OpenRouter. This is R2 enforced by the network as well as by code. Sandboxes have no network at all (§5.1). |
-| **Durability** | Evidence is never pruned (I87), so the volume *is* the organism. Continuous WAL archiving (e.g. wal-g or pgBackRest) to object storage, plus volume snapshots and a blob-store backup, with a tested restore. |
+| **Network egress** | R2 is enforced **in code**, wherever the unit runs: only the inference service holds the key, and only committed bodies are sent. A network-level allowlist (only OpenRouter) is a **second layer the deployment provides where it can**, since stock Docker has no per-container egress firewall without extra privileges. Health reports whether it is present, rather than assuming it (I33). Sandboxes have no network in any runtime, because they have no network namespace (§5.1). |
+| **Durability** | Evidence is never pruned (I87), so the volume *is* the organism. Continuous WAL archiving (e.g. wal-g or pgBackRest) to **any S3-compatible store**, plus a blob-store backup, with a tested restore. Platform volume snapshots (Fly's daily snapshots, for example) are an extra layer, never the only one. |
 | **Upgrades** | A new image plus migrations. The organism survives image replacement by design. |
 | **Health** | A container health check on I25 and I28 (health answerable, supervision making passes), not merely on "the process is alive" (I126). |
-| **Placement** | One machine and one volume: a single-host unit. Multi-host would need the blob store in object storage and is out of scope. |
+| **Placement** | One container and one volume: a single-host unit, on any Docker host or on Fly. Multi-host would need the blob store in object storage and is out of scope. |
+| **Fly support** | A `fly.toml`: one machine, one volume mounted at `/var/lib/remoeba`, secrets for the provider key and database passwords, the health check, and no public operator port. Plus notes on region, volume size, the WAL archive bucket, and that a Fly volume is tied to one host. Nothing in the image is Fly-specific. |
 
 ---
 
@@ -315,7 +327,7 @@ guarantee removed), not merely passing.
 | **P3 — Linux host boundary** | nsjail sandbox, POSIX hardening, Linux filespace with egress roots. Windows code removed. | I29–I43 re-verified from inside the container |
 | **P4 — Semantic search** | pgvector + FTS, `embed` in the inference service, indexer queue, scoped search verbs | S1–S6 mutation-verified. Recall quality measured on a fixed query set against the `LIKE` baseline. |
 | **P5 — Harness port** | Supervisor, mailbox, turns, roles, neuocytes, onto Postgres and Linux, once. The inference service commits its own call records. | The ported Amoeba tests and mutations are green. An organism answers a question end to end on OpenRouter. |
-| **P6 — Remote unit** | Streamable HTTP MCP, TLS, private operator access, egress allowlist, backups | **Move the volume from this machine to the cloud, restart, and resume in-flight work coherently.** |
+| **P6 — Remote unit** | Streamable HTTP MCP, TLS, loopback-only operator console, backups to S3-compatible storage, runtime requirements documented, `fly.toml` | **Move the volume from Docker on this machine to a Fly machine, restart, and resume in-flight work coherently.** The same image runs in both places. |
 
 P5 is the bulk of the work. P1–P4 exist so that it happens once.
 
@@ -328,7 +340,7 @@ P5 is the bulk of the work. P1–P4 exist so that it happens once.
 | P0-1 | "Hosted locally" | **Self-hosted inside the unit.** The unit carries its own Postgres wherever it runs. |
 | P0-2 | One image or compose | **One image** (Postgres + Harness under a small init) plus one volume. Compose only as a dev convenience. |
 | P0-3 | Windows-native support | **Dropped** once the Linux host boundary is verified. The AppContainer and `icacls` code leaves the tree then, rather than staying unwired. |
-| P0-4 | Cloud platform | **Fly.** One machine and one volume fit the unit. Fly machines are Firecracker microVMs, so the sandbox spike (§5.1) must succeed **on a Fly machine**, not only in Docker Desktop. Fly volumes are tied to one host, so WAL archiving and restore (§6) are not optional. |
+| P0-4 | Cloud platform | **Generic Docker, with Fly supported** (revised the same day from "Fly"). The image is a plain OCI image and assumes nothing platform-specific. Fly is a supported deployment with its own `fly.toml`. Consequences: the sandbox spike must pass under stock Docker **and** on a Fly machine; a runtime that cannot jail gets sandboxing disabled and reported, never an unjailed fallback (§5.1); the network egress allowlist is a deployment-provided layer, not assumed (§6); backups go to any S3-compatible store. |
 | P0-5 | Embedding source | **OpenRouter**, through the inference service. No embedding model in the image, no CPU budget for one. Embedding becomes egress (S6). |
 
 Still open: **your API-capability ideas.** Structured outputs, prompt
